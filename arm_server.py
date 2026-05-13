@@ -70,7 +70,17 @@ class Arm:
 class ArmManager(MPBaseManager):
     pass
 
-ArmManager.register('Arm', Arm)
+# Singleton so reconnecting clients reuse the existing Arm instance rather than
+# creating a second TorqueControlledArm cyclic loop that fights with the first.
+_arm_singleton = None
+
+def _get_arm():
+    global _arm_singleton
+    if _arm_singleton is None:
+        _arm_singleton = Arm()
+    return _arm_singleton
+
+ArmManager.register('Arm', _get_arm)
 
 if __name__ == '__main__':
     manager = ArmManager(address=(ARM_RPC_HOST, ARM_RPC_PORT), authkey=RPC_AUTHKEY)

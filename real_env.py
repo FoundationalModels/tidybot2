@@ -1,11 +1,55 @@
 # Author: Jimmy Wu
 # Date: October 2024
 
-from cameras import KinovaCamera, LogitechCamera
+import numpy as np
+from cameras import KinovaCamera, LogitechCamera, ThirdPersonCamera
 from constants import BASE_RPC_HOST, BASE_RPC_PORT, ARM_RPC_HOST, ARM_RPC_PORT, RPC_AUTHKEY
 from constants import BASE_CAMERA_SERIAL
 from arm_server import ArmManager
 from base_server import BaseManager
+
+class ArmOnlyEnv:
+    def __init__(self):
+        arm_manager = ArmManager(address=(ARM_RPC_HOST, ARM_RPC_PORT), authkey=RPC_AUTHKEY)
+        try:
+            arm_manager.connect()
+        except ConnectionRefusedError as e:
+            raise Exception('Could not connect to arm RPC server, is arm_server.py running?') from e
+        self.arm = arm_manager.Arm()
+        try:
+            self.wrist_camera = KinovaCamera(check_fisheye=False)
+        except AssertionError as e:
+            print(f'Warning: Could not open wrist camera ({e}). Continuing without it.')
+            self.wrist_camera = None
+        try:
+            self.third_person_camera = ThirdPersonCamera(device='/dev/video7')
+        except AssertionError as e:
+            print(f'Warning: Could not open third-person camera ({e}). Continuing without it.')
+            self.third_person_camera = None
+
+    def get_obs(self):
+        obs = {'base_pose': np.zeros(3)}
+        obs.update(self.arm.get_state())
+        if self.wrist_camera is not None:
+            obs['wrist_image'] = self.wrist_camera.get_image()
+        if self.third_person_camera is not None:
+            obs['third_person_image'] = self.third_person_camera.get_image()
+        return obs
+
+    def reset(self):
+        print('Resetting arm...')
+        self.arm.reset()
+        print('Arm has been reset')
+
+    def step(self, action):
+        self.arm.execute_action(action)
+
+    def close(self):
+        self.arm.close()
+        if self.wrist_camera is not None:
+            self.wrist_camera.close()
+        if self.third_person_camera is not None:
+            self.third_person_camera.close()
 
 class RealEnv:
     def __init__(self):

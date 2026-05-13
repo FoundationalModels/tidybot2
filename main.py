@@ -87,9 +87,12 @@ def main(args):
             env = MujocoEnv(show_images=True)
         else:
             env = MujocoEnv()
-    else:
+    elif args.both_bots:
         from real_env import RealEnv
         env = RealEnv()
+    else:
+        from real_env import ArmOnlyEnv
+        env = ArmOnlyEnv()
 
     # Create policy
     if args.teleop:
@@ -107,6 +110,7 @@ def main(args):
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument('--sim', action='store_true')
+    parser.add_argument('--both_bots', action='store_true')
     parser.add_argument('--teleop', action='store_true')
     parser.add_argument('--save', action='store_true')
     parser.add_argument('--output-dir', default='data/demos')

@@ -86,7 +86,7 @@ def check_fisheye_centered(image):
     return abs(width / 2 - center[0]) < 0.05 * width and abs(height / 2 - center[1]) < 0.05 * height
 
 class KinovaCamera(Camera):
-    def __init__(self):
+    def __init__(self, check_fisheye=True):
         # GStreamer video capture (see https://github.com/Kinovarobotics/kortex/issues/88)
         # Note: max-buffers=1 and drop=true are added to reduce latency spikes
         self.cap = cv.VideoCapture('rtspsrc location=rtsp://192.168.1.10/color latency=0 ! decodebin ! videoconvert ! appsink sync=false max-buffers=1 drop=true', cv.CAP_GSTREAMER)
@@ -103,7 +103,7 @@ class KinovaCamera(Camera):
             image = self.get_image()
 
         # Make sure fisheye lens did not accidentally get bumped
-        if not check_fisheye_centered(image):
+        if check_fisheye and not check_fisheye_centered(image):
             raise Exception('The fisheye lens on the Kinova wrist camera appears to be off-center')
 
     def apply_camera_settings(self):
@@ -148,6 +148,16 @@ class KinovaCamera(Camera):
             sensor_focus_action.focus_action = VisionConfig_pb2.FOCUSACTION_SET_MANUAL_FOCUS
             sensor_focus_action.manual_focus.value = 0
             vision_config.DoSensorFocusAction(sensor_focus_action, vision_device_id)
+
+class ThirdPersonCamera(Camera):
+    def __init__(self, device=0, frame_width=640, frame_height=480, fourcc='YUYV'):
+        self.cap = cv.VideoCapture(device, cv.CAP_V4L2)
+        self.cap.set(cv.CAP_PROP_FOURCC, cv.VideoWriter_fourcc(*fourcc))
+        self.cap.set(cv.CAP_PROP_FRAME_WIDTH, frame_width)
+        self.cap.set(cv.CAP_PROP_FRAME_HEIGHT, frame_height)
+        self.cap.set(cv.CAP_PROP_BUFFERSIZE, 1)
+        assert self.cap.isOpened(), f'Unable to open camera at {device}'
+        super().__init__()
 
 if __name__ == '__main__':
     base_camera = LogitechCamera(BASE_CAMERA_SERIAL)

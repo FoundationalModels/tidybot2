@@ -23,14 +23,16 @@ def should_save_episode(writer):
             return False
         print('Invalid response')
 
-def run_episode(env, policy, writer=None):
+def run_episode(env, policy, writer=None, save_prompt_fn=None,
+                pre_reset_msg='Press "Start episode" in the web app when ready to start new episode',
+                post_episode_msg='Teleop is now active. Press "Reset env" in the web app when ready to proceed.'):
     # Reset the env
     print('Resetting env...')
     env.reset()
     print('Env has been reset')
 
-    # Wait for user to press "Start episode"
-    print('Press "Start episode" in the web app when ready to start new episode')
+    if pre_reset_msg is not None:
+        print(pre_reset_msg)
     policy.reset()
     print('Starting new episode')
 
@@ -65,57 +67,60 @@ def run_episode(env, policy, writer=None):
             episode_ended = True
             print('Episode ended')
 
-            if writer is not None and should_save_episode(writer):
+            prompt = save_prompt_fn if save_prompt_fn is not None else should_save_episode
+            if writer is not None and prompt(writer):
                 writer.flush_async()
                 writer.wait_for_flush()
 
-            print('Teleop is now active. Press "Reset env" in the web app when ready to proceed.')
+            print(post_episode_msg)
 
         # Ready for env reset
         elif action == 'reset_env':
             break
 
 def main(args):
-    # Gamepad mode bypasses the episode runner and directly drives the robot
-    if args.gamepad:
-        if args.robot == 'arm':
-            from gamepad_teleop import GamepadArmTeleop
-            teleop = GamepadArmTeleop()
-            teleop.run()
-        else:
-            from gamepad_teleop import GamepadTeleop
-            teleop = GamepadTeleop()
-            try:
-                teleop.run()
-            finally:
-                if teleop.vehicle:
-                    teleop.vehicle.stop_control()
-        return
-
     # Create env
     if args.sim:
         from mujoco_env import MujocoEnv
-        if args.teleop:
+        if args.teleop or args.gamepad:
             env = MujocoEnv(show_images=True)
         else:
             env = MujocoEnv()
     elif args.both_bots:
         from real_env import RealEnv
         env = RealEnv()
+    elif args.gamepad and args.robot == 'base':
+        from real_env import BaseOnlyEnv
+        env = BaseOnlyEnv()
     else:
         from real_env import ArmOnlyEnv
         env = ArmOnlyEnv()
 
     # Create policy
-    if args.teleop:
+    if args.gamepad:
+        if args.robot == 'base':
+            from gamepad_teleop import GamepadBasePolicy
+            policy = GamepadBasePolicy()
+        else:
+            from gamepad_teleop import GamepadArmPolicy
+            policy = GamepadArmPolicy()
+        save_prompt_fn = policy.save_prompt
+    elif args.teleop:
         policy = TeleopPolicy()
+        save_prompt_fn = None
     else:
         policy = RemotePolicy()
+        save_prompt_fn = None
 
     try:
         while True:
             writer = EpisodeWriter(args.output_dir) if args.save else None
-            run_episode(env, policy, writer)
+            if args.gamepad:
+                run_episode(env, policy, writer, save_prompt_fn=save_prompt_fn,
+                            pre_reset_msg=None,
+                            post_episode_msg='Press Start on gamepad when ready to proceed.')
+            else:
+                run_episode(env, policy, writer, save_prompt_fn=save_prompt_fn)
     finally:
         env.close()
 

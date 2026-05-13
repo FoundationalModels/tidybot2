@@ -11,13 +11,17 @@ import numpy as np
 from constants import POLICY_CONTROL_FREQ
 
 def write_frames_to_mp4(frames, mp4_path):
+    import os
     height, width, _ = frames[0].shape
     fourcc = cv.VideoWriter_fourcc(*'avc1')
     out = cv.VideoWriter(str(mp4_path), fourcc, POLICY_CONTROL_FREQ, (width, height))
     for frame in frames:
-        bgr_frame = cv.cvtColor(frame, cv.COLOR_RGB2BGR)
-        out.write(bgr_frame)
+        out.write(cv.cvtColor(frame, cv.COLOR_RGB2BGR))
     out.release()
+    # GStreamer-backed VideoWriter may return from release() before the pipeline
+    # has finished flushing to disk; fsync forces the OS buffer to commit.
+    with open(str(mp4_path), 'rb') as f:
+        os.fsync(f.fileno())
 
 def read_frames_from_mp4(mp4_path):
     cap = cv.VideoCapture(str(mp4_path))
@@ -55,6 +59,14 @@ class EpisodeWriter:
         return len(self.observations)
 
     def _flush(self):
+        try:
+            self._flush_inner()
+        except Exception as e:
+            import traceback
+            print(f'Episode save failed: {e}')
+            traceback.print_exc()
+
+    def _flush_inner(self):
         assert len(self) > 0
 
         # Create episode dir
@@ -64,16 +76,18 @@ class EpisodeWriter:
         frames_dict = {}
         for obs in self.observations:
             for k, v in obs.items():
-                if v.ndim == 3:
+                if v is not None and hasattr(v, 'ndim') and v.ndim == 3:
                     if k not in frames_dict:
                         frames_dict[k] = []
                     frames_dict[k].append(v)
                     obs[k] = None
 
-        # Write images as MP4 videos
+        # Write images as MP4 videos (print before and after each so output is accurate)
         for k, frames in frames_dict.items():
             mp4_path = self.episode_dir / f'{k}.mp4'
+            print(f'  Saving {k}.mp4 ({len(frames)} frames)...')
             write_frames_to_mp4(frames, mp4_path)
+            print(f'  Saved {k}.mp4')
 
         # Write rest of episode data
         with open(self.episode_dir / 'data.pkl', 'wb') as f:  # Note: Not secure. Only unpickle data you trust.
@@ -84,7 +98,7 @@ class EpisodeWriter:
     def flush_async(self):
         print('Saving successful episode to disk...')
         # Note: Disk writes may cause latency spikes in low-level controllers
-        self.flush_thread = threading.Thread(target=self._flush, daemon=True)
+        self.flush_thread = threading.Thread(target=self._flush, daemon=False)
         self.flush_thread.start()
 
     def wait_for_flush(self):

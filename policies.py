@@ -37,6 +37,9 @@ class WebServer:
             # Send the timestamp back for RTT calculation (expected RTT on 5 GHz Wi-Fi is 7 ms)
             emit('echo', data['timestamp'])
 
+            # Record server-side receive time to avoid clock-skew issues
+            data['receive_time'] = time.time()
+
             # Add data to queue for processing
             self.queue.put(data)
 
@@ -258,8 +261,8 @@ class TeleopPolicy(Policy):
                 if 'state_update' in data:
                     self.teleop_state = data['state_update']
 
-                # Process message if not stale
-                elif 1000 * time.time() - data['timestamp'] < 250:  # 250 ms
+                # Process message if not stale (use server-side receive time to avoid phone/desktop clock skew)
+                elif time.time() - data['receive_time'] < 0.25:  # 250 ms
                     self._process_message(data)
 
             time.sleep(0.001)

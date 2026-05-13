@@ -66,18 +66,14 @@ def run_episode(env, policy, writer=None):
             print('Episode ended')
 
             if writer is not None and should_save_episode(writer):
-                # Save to disk in background thread
                 writer.flush_async()
+                writer.wait_for_flush()
 
             print('Teleop is now active. Press "Reset env" in the web app when ready to proceed.')
 
         # Ready for env reset
         elif action == 'reset_env':
             break
-
-    if writer is not None:
-        # Wait for writer to finish saving to disk
-        writer.wait_for_flush()
 
 def main(args):
     # Create env

@@ -150,14 +150,35 @@ class KinovaCamera(Camera):
             vision_config.DoSensorFocusAction(sensor_focus_action, vision_device_id)
 
 class ThirdPersonCamera(Camera):
-    def __init__(self, device=0, frame_width=640, frame_height=480, fourcc='YUYV'):
-        self.cap = cv.VideoCapture(device, cv.CAP_V4L2)
-        self.cap.set(cv.CAP_PROP_FOURCC, cv.VideoWriter_fourcc(*fourcc))
-        self.cap.set(cv.CAP_PROP_FRAME_WIDTH, frame_width)
-        self.cap.set(cv.CAP_PROP_FRAME_HEIGHT, frame_height)
-        self.cap.set(cv.CAP_PROP_BUFFERSIZE, 1)
-        assert self.cap.isOpened(), f'Unable to open camera at {device}'
+    def __init__(self, device=None, frame_width=640, frame_height=480):
+        if device is None:
+            device = self._find_realsense_color_device()
+            assert device is not None, 'Could not find RealSense color stream device'
+            print(f'Found RealSense color stream at {device}')
+        pipeline = (
+            f'v4l2src device={device} '
+            f'! video/x-raw,format=YUY2,width={frame_width},height={frame_height},framerate=30/1 '
+            f'! videoconvert ! appsink sync=false max-buffers=1 drop=true'
+        )
+        self.cap = cv.VideoCapture(pipeline, cv.CAP_GSTREAMER)
+        assert self.cap.isOpened(), f'Unable to open RealSense color stream at {device}'
         super().__init__()
+
+    @staticmethod
+    def _find_realsense_color_device():
+        import glob
+        import subprocess
+        for dev in sorted(glob.glob('/dev/video*')):
+            try:
+                info = subprocess.run(['v4l2-ctl', '-d', dev, '--info'], capture_output=True, text=True, timeout=2)
+                if 'RealSense' not in info.stdout and 'Intel' not in info.stdout:
+                    continue
+                fmts = subprocess.run(['v4l2-ctl', '-d', dev, '--list-formats'], capture_output=True, text=True, timeout=2)
+                if 'YUYV' in fmts.stdout:
+                    return dev
+            except Exception:
+                continue
+        return None
 
 if __name__ == '__main__':
     base_camera = LogitechCamera(BASE_CAMERA_SERIAL)

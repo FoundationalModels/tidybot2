@@ -22,7 +22,7 @@ class ArmOnlyEnv:
             print(f'Warning: Could not open wrist camera ({e}). Continuing without it.')
             self.wrist_camera = None
         try:
-            self.third_person_camera = ThirdPersonCamera(device='/dev/video7')
+            self.third_person_camera = ThirdPersonCamera()
         except AssertionError as e:
             print(f'Warning: Could not open third-person camera ({e}). Continuing without it.')
             self.third_person_camera = None

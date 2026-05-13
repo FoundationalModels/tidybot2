@@ -12,12 +12,12 @@
 #   Axes:    Left X=0, Left Y=1, Right X=3, Right Y=4
 #   Hat:     D-pad (hat 0): up=(0,1), down=(0,-1)
 #
-# Base control:
+# GamepadTeleop (standalone base velocity control):
 #   Start/Back -> enable/disable, hold LB or RB to move
 #   Left stick -> X/Y velocity, Right stick X -> angular velocity
 #   LB = local frame, RB = global frame
 #
-# Arm control:
+# GamepadArmTeleop (standalone arm control):
 #   Start -> reset arm (home + open gripper)
 #   Hold LB or RB (dead-man's switch) to move arm:
 #     Left stick X/Y -> EE X/Y translation
@@ -26,7 +26,12 @@
 #     Right stick Y  -> EE pitch rotation
 #     X button       -> EE +yaw rotation
 #     Y button       -> EE -yaw rotation
-#   Hold A -> close gripper, hold B -> open gripper (works without dead-man's switch)
+#   Hold A -> close gripper, hold B -> open gripper
+#
+# GamepadArmPolicy / GamepadBasePolicy (episode recording via main.py):
+#   Start -> begin episode, Back -> end episode
+#   A -> save episode, B -> discard episode
+#   Start (after episode ended) -> reset env
 
 import argparse
 import os
@@ -43,6 +48,25 @@ pygame.init()
 
 def apply_deadzone(arr, deadzone_size=0.05):
     return np.where(np.abs(arr) <= deadzone_size, 0, np.sign(arr) * (np.abs(arr) - deadzone_size) / (1 - deadzone_size))
+
+def _gamepad_save_prompt(joy, writer):
+    if len(writer) == 0:
+        print('Discarding empty episode')
+        return False
+    print('Save episode? Press A (yes) or B (no)')
+    prev_a = joy.get_button(0)
+    prev_b = joy.get_button(1)
+    while True:
+        pygame.event.pump()
+        a = joy.get_button(0)
+        b = joy.get_button(1)
+        if a and not prev_a:
+            return True
+        if b and not prev_b:
+            print('Discarding episode')
+            return False
+        prev_a, prev_b = a, b
+        time.sleep(0.05)
 
 class GamepadTeleop:
     def __init__(self):
@@ -93,7 +117,6 @@ class GamepadTeleop:
                     # Send command to robot
                     target_velocity = self.vehicle.max_vel * target_velocity
                     self.vehicle.set_target_velocity(target_velocity, frame=frame)
-                    # self.vehicle.set_target_position(self.vehicle.x + 1.5 * target_velocity)
 
                 elif last_enabled:
                     print('Robot disabled')
@@ -101,22 +124,161 @@ class GamepadTeleop:
 
             time.sleep(0.01)
 
-class GamepadArmTeleop:
-    # Max EE delta per control cycle (at 10 Hz)
-    ARM_MAX_POS_DELTA = np.array([0.02, 0.02, 0.02])  # meters
-    ARM_MAX_ROT_DELTA = 0.05  # radians
-    ARM_GRIPPER_DELTA = 0.1  # gripper position [0=open, 1=closed]
+class GamepadArmPolicy:
+    ARM_MAX_POS_DELTA = np.array([0.02, 0.02, 0.02])  # meters per step at 10 Hz
+    ARM_MAX_ROT_DELTA = 0.05  # radians per step at 10 Hz
+    ARM_GRIPPER_DELTA = 0.1
 
+    def __init__(self, print_instructions=True):
+        self.joy = Joystick(0)
+        self._target_pos = None
+        self._target_quat = None
+        self._gripper_pos = 0.0
+        self._last_enabled = False
+        self._prev_start = False
+        self._prev_back = False
+        self._episode_ended = False
+        if print_instructions:
+            print('=== Kinova Arm Gamepad Teleop ===')
+            print()
+            print('Episode control:')
+            print('  Start          -> begin episode')
+            print('  Back           -> end episode')
+            print()
+            print('Translation (hold LB or RB to enable):')
+            print('  Left stick X/Y -> EE X/Y translation')
+            print('  D-pad up/down  -> EE +Z/-Z translation')
+            print()
+            print('Rotation (hold LB or RB to enable):')
+            print('  Right stick X  -> roll')
+            print('  Right stick Y  -> pitch')
+            print('  X button       -> +yaw')
+            print('  Y button       -> -yaw')
+            print()
+            print('Gripper (hold LB or RB to enable):')
+            print('  Hold A         -> close gripper')
+            print('  Hold B         -> open gripper')
+            print()
+            print(f'(Gamepad: {self.joy.get_name()}, {self.joy.get_numaxes()} axes, '
+                  f'{self.joy.get_numbuttons()} buttons, {self.joy.get_numhats()} hats)')
+
+    def seed(self, pos, quat, gripper_pos=0.0):
+        self._target_pos = pos.copy()
+        self._target_quat = quat.copy()
+        self._gripper_pos = gripper_pos
+        self._last_enabled = False
+
+    def reset(self):
+        self._target_pos = None
+        self._target_quat = None
+        self._gripper_pos = 0.0
+        self._last_enabled = False
+        self._prev_start = False
+        self._prev_back = False
+        self._episode_ended = False
+        print('Press Start on gamepad when ready to begin episode')
+        while True:
+            pygame.event.pump()
+            start = self.joy.get_button(7)
+            if start and not self._prev_start:
+                self._prev_start = start
+                break
+            self._prev_start = start
+            time.sleep(0.05)
+
+    def _read_action(self, obs):
+        if self._target_pos is None:
+            self._target_pos = obs['arm_pos'].copy()
+            self._target_quat = obs['arm_quat'].copy()
+            self._gripper_pos = float(obs['gripper_pos'][0])
+
+        left_bumper = self.joy.get_button(4)
+        right_bumper = self.joy.get_button(5)
+        if not (left_bumper or right_bumper):
+            if self._last_enabled:
+                print('Control disabled')
+                self._last_enabled = False
+            return None
+
+        if not self._last_enabled:
+            print('Control enabled')
+            self._last_enabled = True
+
+        # Gripper: hold A to close, hold B to open
+        a_button = self.joy.get_button(0)
+        b_button = self.joy.get_button(1)
+        self._gripper_pos = float(np.clip(
+            self._gripper_pos + self.ARM_GRIPPER_DELTA * (float(a_button) - float(b_button)),
+            0.0, 1.0,
+        ))
+
+        # Translation: accumulate deltas onto local target (avoids feedback oscillation)
+        dx = -self.joy.get_axis(1)   # left stick Y axis -> X (forward/back)
+        dy = -self.joy.get_axis(0)   # left stick X axis -> Y (left/right)
+        dz = float(self.joy.get_hat(0)[1])  # D-pad up=+1, down=-1
+        pos_deltas = apply_deadzone(np.array([dx, dy]))
+        self._target_pos = self._target_pos + self.ARM_MAX_POS_DELTA * np.array([pos_deltas[0], pos_deltas[1], dz])
+
+        # Rotation: right stick -> roll/pitch, X/Y buttons -> +/-yaw
+        droll  = -self.joy.get_axis(3)
+        dpitch = self.joy.get_axis(4)
+        dyaw   = float(self.joy.get_button(2)) - float(self.joy.get_button(3))
+        rot_deltas = apply_deadzone(np.array([droll, dpitch]), deadzone_size=0.1)
+        delta_rot = R.from_euler('ZYX', [
+            self.ARM_MAX_ROT_DELTA * dyaw,
+            self.ARM_MAX_ROT_DELTA * rot_deltas[1],
+            self.ARM_MAX_ROT_DELTA * rot_deltas[0],
+        ])
+        self._target_quat = (delta_rot * R.from_quat(self._target_quat)).as_quat()
+        if self._target_quat[3] < 0:
+            np.negative(self._target_quat, out=self._target_quat)
+
+        return {
+            'arm_pos': self._target_pos,
+            'arm_quat': self._target_quat,
+            'gripper_pos': np.array([self._gripper_pos]),
+        }
+
+    def step(self, obs):
+        pygame.event.pump()
+        start = self.joy.get_button(7)
+        back = self.joy.get_button(6)
+
+        if self._episode_ended:
+            if start and not self._prev_start:
+                self._prev_start = start
+                self._prev_back = back
+                return 'reset_env'
+            self._prev_start = start
+            self._prev_back = back
+            return None
+
+        if back and not self._prev_back:
+            self._episode_ended = True
+            self._prev_start = start
+            self._prev_back = back
+            return 'end_episode'
+
+        self._prev_start = start
+        self._prev_back = back
+        return self._read_action(obs)
+
+    def save_prompt(self, writer):
+        return _gamepad_save_prompt(self.joy, writer)
+
+
+class GamepadArmTeleop:
     def __init__(self):
-        self.joy = Joystick(0)  # Logitech F710
         self.arm_manager = ArmManager(address=(ARM_RPC_HOST, ARM_RPC_PORT), authkey=RPC_AUTHKEY)
         try:
             self.arm_manager.connect()
         except Exception as e:
             raise Exception('Could not connect to arm RPC server, is arm_server.py running?') from e
         self.arm = self.arm_manager.Arm()
+        self._policy = GamepadArmPolicy(print_instructions=False)
 
     def run(self):
+        joy = self._policy.joy
         print('=== Kinova Arm Gamepad Teleop ===')
         print()
         print('Setup:')
@@ -137,29 +299,19 @@ class GamepadArmTeleop:
         print('  Hold B         -> open gripper')
         print()
         print('Press Start to begin.')
-        print(f'(Gamepad: {self.joy.get_name()}, {self.joy.get_numaxes()} axes, '
-              f'{self.joy.get_numbuttons()} buttons, {self.joy.get_numhats()} hats)')
+        print(f'(Gamepad: {joy.get_name()}, {joy.get_numaxes()} axes, '
+              f'{joy.get_numbuttons()} buttons, {joy.get_numhats()} hats)')
 
         arm_ready = False
-        last_enabled = False
         prev_start = False
-        target_pos = None
-        target_quat = None
-        gripper_pos = 0.0
-
         while True:
             pygame.event.pump()
-
-            # Reset arm on Start button press (rising edge)
-            start = self.joy.get_button(7)
+            start = joy.get_button(7)
             if start and not prev_start:
                 print('Resetting arm...')
                 self.arm.reset()
-                # Initialize targets from actual state after reset
                 state = self.arm.get_state()
-                target_pos = state['arm_pos'].copy()
-                target_quat = state['arm_quat'].copy()
-                gripper_pos = 0.0
+                self._policy.seed(state['arm_pos'], state['arm_quat'])
                 arm_ready = True
                 print('Arm ready')
             prev_start = start
@@ -168,54 +320,124 @@ class GamepadArmTeleop:
                 time.sleep(0.1)
                 continue
 
-            # Dead-man's switch: hold LB or RB to enable all control
-            left_bumper = self.joy.get_button(4)
-            right_bumper = self.joy.get_button(5)
-            if left_bumper or right_bumper:
-                if not last_enabled:
-                    print('Control enabled')
-                    last_enabled = True
-
-                # Gripper: hold A to close, hold B to open
-                a_button = self.joy.get_button(0)
-                b_button = self.joy.get_button(1)
-                gripper_pos = float(np.clip(
-                    gripper_pos + self.ARM_GRIPPER_DELTA * (float(a_button) - float(b_button)),
-                    0.0, 1.0,
-                ))
-
-                # Translation: accumulate deltas onto local target (avoids feedback oscillation)
-                dx = -self.joy.get_axis(1)   # left stick Y axis -> X (forward/back)
-                dy = -self.joy.get_axis(0)   # left stick X axis -> Y (left/right)
-                dz = float(self.joy.get_hat(0)[1])  # D-pad up=+1, down=-1
-                pos_deltas = apply_deadzone(np.array([dx, dy]))
-                target_pos += self.ARM_MAX_POS_DELTA * np.array([pos_deltas[0], pos_deltas[1], dz])
-
-                # Rotation: right stick -> roll/pitch, X/Y buttons -> +/-yaw
-                droll  = -self.joy.get_axis(3)             # right stick X
-                dpitch = self.joy.get_axis(4)              # right stick Y
-                dyaw   = float(self.joy.get_button(2)) - float(self.joy.get_button(3))  # X=+yaw, Y=-yaw
-                rot_deltas = apply_deadzone(np.array([droll, dpitch]), deadzone_size=0.1)
-                delta_rot = R.from_euler('ZYX', [
-                    self.ARM_MAX_ROT_DELTA * dyaw,
-                    self.ARM_MAX_ROT_DELTA * rot_deltas[1],
-                    self.ARM_MAX_ROT_DELTA * rot_deltas[0],
-                ])
-                target_quat = (delta_rot * R.from_quat(target_quat)).as_quat()
-                if target_quat[3] < 0:
-                    np.negative(target_quat, out=target_quat)
-
-                self.arm.execute_action({
-                    'arm_pos': target_pos,
-                    'arm_quat': target_quat,
-                    'gripper_pos': np.array([gripper_pos]),
-                })
-            else:
-                if last_enabled:
-                    print('Control disabled')
-                    last_enabled = False
+            obs = self.arm.get_state()
+            action = self._policy._read_action(obs)
+            if action is not None:
+                self.arm.execute_action(action)
 
             time.sleep(0.1)
+
+
+class GamepadBasePolicy:
+    BASE_MAX_POS_DELTA = np.array([0.05, 0.05])  # meters per step at 10 Hz
+    BASE_MAX_THETA_DELTA = 0.15  # radians per step at 10 Hz
+
+    def __init__(self, print_instructions=True):
+        self.joy = Joystick(0)
+        self._target_pose = None  # [x, y, theta] in global frame
+        self._last_enabled = False
+        self._prev_start = False
+        self._prev_back = False
+        self._episode_ended = False
+        if print_instructions:
+            print('=== Mobile Base Gamepad Teleop ===')
+            print()
+            print('Episode control:')
+            print('  Start          -> begin episode')
+            print('  Back           -> end episode')
+            print()
+            print('Movement (hold LB for local frame, RB for global frame):')
+            print('  Left stick X/Y -> X/Y movement')
+            print('  Right stick X  -> rotation')
+            print()
+            print(f'(Gamepad: {self.joy.get_name()}, {self.joy.get_numaxes()} axes, '
+                  f'{self.joy.get_numbuttons()} buttons, {self.joy.get_numhats()} hats)')
+
+    def seed(self, pose):
+        self._target_pose = pose.copy()
+        self._last_enabled = False
+
+    def reset(self):
+        self._target_pose = None
+        self._last_enabled = False
+        self._prev_start = False
+        self._prev_back = False
+        self._episode_ended = False
+        print('Press Start on gamepad when ready to begin episode')
+        while True:
+            pygame.event.pump()
+            start = self.joy.get_button(7)
+            if start and not self._prev_start:
+                self._prev_start = start
+                break
+            self._prev_start = start
+            time.sleep(0.05)
+
+    def _read_action(self, obs):
+        if self._target_pose is None:
+            self._target_pose = obs['base_pose'].copy()
+
+        left_bumper = self.joy.get_button(4)
+        right_bumper = self.joy.get_button(5)
+        if not (left_bumper or right_bumper):
+            if self._last_enabled:
+                print('Control disabled')
+                self._last_enabled = False
+            return None
+
+        frame = 'local' if left_bumper else 'global'
+        if not self._last_enabled:
+            print(f'Control enabled ({frame} frame)')
+            self._last_enabled = True
+
+        x = -self.joy.get_axis(1)   # left stick Y axis
+        y = -self.joy.get_axis(0)   # left stick X axis
+        th = -self.joy.get_axis(3)  # right stick X axis
+        velocity = apply_deadzone(np.array([x, y, th]))
+
+        # Transform joystick input from robot-local frame to global frame
+        if frame == 'local':
+            theta = obs['base_pose'][2]
+            cos_th, sin_th = np.cos(theta), np.sin(theta)
+            dx = self.BASE_MAX_POS_DELTA[0] * (cos_th * velocity[0] - sin_th * velocity[1])
+            dy = self.BASE_MAX_POS_DELTA[1] * (sin_th * velocity[0] + cos_th * velocity[1])
+        else:
+            dx = self.BASE_MAX_POS_DELTA[0] * velocity[0]
+            dy = self.BASE_MAX_POS_DELTA[1] * velocity[1]
+
+        self._target_pose[0] += dx
+        self._target_pose[1] += dy
+        self._target_pose[2] += self.BASE_MAX_THETA_DELTA * velocity[2]
+
+        return {'base_pose': self._target_pose}
+
+    def step(self, obs):
+        pygame.event.pump()
+        start = self.joy.get_button(7)
+        back = self.joy.get_button(6)
+
+        if self._episode_ended:
+            if start and not self._prev_start:
+                self._prev_start = start
+                self._prev_back = back
+                return 'reset_env'
+            self._prev_start = start
+            self._prev_back = back
+            return None
+
+        if back and not self._prev_back:
+            self._episode_ended = True
+            self._prev_start = start
+            self._prev_back = back
+            return 'end_episode'
+
+        self._prev_start = start
+        self._prev_back = back
+        return self._read_action(obs)
+
+    def save_prompt(self, writer):
+        return _gamepad_save_prompt(self.joy, writer)
+
 
 # Handle SIGTERM
 def handler(signum, frame):

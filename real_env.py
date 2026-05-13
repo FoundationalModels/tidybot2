@@ -51,6 +51,33 @@ class ArmOnlyEnv:
         if self.third_person_camera is not None:
             self.third_person_camera.close()
 
+class BaseOnlyEnv:
+    def __init__(self):
+        base_manager = BaseManager(address=(BASE_RPC_HOST, BASE_RPC_PORT), authkey=RPC_AUTHKEY)
+        try:
+            base_manager.connect()
+        except ConnectionRefusedError as e:
+            raise Exception('Could not connect to base RPC server, is base_server.py running?') from e
+        self.base = base_manager.Base(max_vel=(0.5, 0.5, 1.57), max_accel=(0.5, 0.5, 1.57))
+        self.base_camera = LogitechCamera(BASE_CAMERA_SERIAL)
+
+    def get_obs(self):
+        obs = self.base.get_state()
+        obs['base_image'] = self.base_camera.get_image()
+        return obs
+
+    def reset(self):
+        print('Resetting base...')
+        self.base.reset()
+        print('Base has been reset')
+
+    def step(self, action):
+        self.base.execute_action(action)
+
+    def close(self):
+        self.base.close()
+        self.base_camera.close()
+
 class RealEnv:
     def __init__(self):
         # RPC server connection for base

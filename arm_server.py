@@ -24,6 +24,7 @@ class Arm:
         self.command_queue = queue.Queue(1)
         self.controller = None
         self.ik_solver = IKSolver(ee_offset=0.12)
+        self.last_qpos = None  # last commanded joint angles, used to seed IK
 
     def reset(self):
         # Stop low-level control
@@ -38,6 +39,9 @@ class Arm:
         self.arm.open_gripper()
         self.arm.retract()
 
+        # Reset IK seed so first command after reset uses measured joint angles
+        self.last_qpos = None
+
         # Create new instance of controller
         self.controller = JointCompliantController(self.command_queue)
 
@@ -47,7 +51,13 @@ class Arm:
             time.sleep(0.01)
 
     def execute_action(self, action):
-        qpos = self.ik_solver.solve(action['arm_pos'], action['arm_quat'], self.arm.q)
+        # Seed IK from last commanded qpos for consistent solutions across calls.
+        # Using measured self.arm.q can cause the redundant 7-DOF IK to converge
+        # to different joint configurations for the same EE target, producing
+        # spurious orientation drift.
+        seed = self.last_qpos if self.last_qpos is not None else self.arm.q
+        qpos = self.ik_solver.solve(action['arm_pos'], action['arm_quat'], seed)
+        self.last_qpos = qpos
         self.command_queue.put((qpos, action['gripper_pos'].item()))
 
     def get_state(self):

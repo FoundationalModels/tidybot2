@@ -76,6 +76,22 @@ def run_episode(env, policy, writer=None):
             break
 
 def main(args):
+    # Gamepad mode bypasses the episode runner and directly drives the robot
+    if args.gamepad:
+        if args.robot == 'arm':
+            from gamepad_teleop import GamepadArmTeleop
+            teleop = GamepadArmTeleop()
+            teleop.run()
+        else:
+            from gamepad_teleop import GamepadTeleop
+            teleop = GamepadTeleop()
+            try:
+                teleop.run()
+            finally:
+                if teleop.vehicle:
+                    teleop.vehicle.stop_control()
+        return
+
     # Create env
     if args.sim:
         from mujoco_env import MujocoEnv
@@ -107,7 +123,12 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument('--sim', action='store_true')
     parser.add_argument('--both_bots', action='store_true')
+    parser.add_argument('--gamepad', action='store_true')
+    parser.add_argument('--robot', default='arm', choices=['arm', 'base'])
     parser.add_argument('--teleop', action='store_true')
     parser.add_argument('--save', action='store_true')
     parser.add_argument('--output-dir', default='data/demos')
-    main(parser.parse_args())
+    args = parser.parse_args()
+    if args.both_bots and args.gamepad:
+        parser.error('--both_bots and --gamepad cannot both be set')
+    main(args)

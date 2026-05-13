@@ -22,10 +22,10 @@
 #   Hold LB or RB (dead-man's switch) to move arm:
 #     Left stick X/Y -> EE X/Y translation
 #     D-pad up/down  -> EE +Z/-Z translation
-#     Right stick X  -> EE yaw rotation
+#     Right stick X  -> EE roll rotation
 #     Right stick Y  -> EE pitch rotation
-#     X button       -> EE +roll rotation
-#     Y button       -> EE -roll rotation
+#     X button       -> EE +yaw rotation
+#     Y button       -> EE -yaw rotation
 #   Hold A -> close gripper, hold B -> open gripper (works without dead-man's switch)
 
 import argparse
@@ -109,12 +109,12 @@ class GamepadArmTeleop:
 
     def __init__(self):
         self.joy = Joystick(0)  # Logitech F710
-        arm_manager = ArmManager(address=(ARM_RPC_HOST, ARM_RPC_PORT), authkey=RPC_AUTHKEY)
+        self.arm_manager = ArmManager(address=(ARM_RPC_HOST, ARM_RPC_PORT), authkey=RPC_AUTHKEY)
         try:
-            arm_manager.connect()
+            self.arm_manager.connect()
         except Exception as e:
             raise Exception('Could not connect to arm RPC server, is arm_server.py running?') from e
-        self.arm = arm_manager.Arm()
+        self.arm = self.arm_manager.Arm()
 
     def run(self):
         print('=== Kinova Arm Gamepad Teleop ===')
@@ -127,10 +127,10 @@ class GamepadArmTeleop:
         print('  D-pad up/down  -> EE +Z/-Z translation')
         print()
         print('Rotation (hold LB or RB to enable):')
-        print('  Right stick X  -> yaw')
+        print('  Right stick X  -> roll')
         print('  Right stick Y  -> pitch')
-        print('  X button       -> +roll')
-        print('  Y button       -> -roll')
+        print('  X button       -> +yaw')
+        print('  Y button       -> -yaw')
         print()
         print('Gripper (hold LB or RB to enable):')
         print('  Hold A         -> close gripper')
@@ -191,15 +191,15 @@ class GamepadArmTeleop:
                 pos_deltas = apply_deadzone(np.array([dx, dy]))
                 target_pos += self.ARM_MAX_POS_DELTA * np.array([pos_deltas[0], pos_deltas[1], dz])
 
-                # Rotation: right stick -> yaw/pitch, X/Y buttons -> +/-roll
-                dyaw   = -self.joy.get_axis(3)             # right stick X
-                dpitch = -self.joy.get_axis(4)             # right stick Y
-                droll  = float(self.joy.get_button(2)) - float(self.joy.get_button(3))  # X=+roll, Y=-roll
-                rot_deltas = apply_deadzone(np.array([dyaw, dpitch]))
+                # Rotation: right stick -> roll/pitch, X/Y buttons -> +/-yaw
+                droll  = -self.joy.get_axis(3)             # right stick X
+                dpitch = self.joy.get_axis(4)              # right stick Y
+                dyaw   = float(self.joy.get_button(2)) - float(self.joy.get_button(3))  # X=+yaw, Y=-yaw
+                rot_deltas = apply_deadzone(np.array([droll, dpitch]), deadzone_size=0.1)
                 delta_rot = R.from_euler('ZYX', [
-                    self.ARM_MAX_ROT_DELTA * rot_deltas[0],
+                    self.ARM_MAX_ROT_DELTA * dyaw,
                     self.ARM_MAX_ROT_DELTA * rot_deltas[1],
-                    self.ARM_MAX_ROT_DELTA * droll,
+                    self.ARM_MAX_ROT_DELTA * rot_deltas[0],
                 ])
                 target_quat = (delta_rot * R.from_quat(target_quat)).as_quat()
                 if target_quat[3] < 0:

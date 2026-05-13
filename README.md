@@ -1,5 +1,37 @@
 # tidybot2
 
+## Recording demos on a table-mounted Kinova arm
+
+For a single Kinova arm mounted to a table, start from this repo and activate the environment first:
+
+```bash
+conda activate tidybot2
+```
+
+In one terminal, start the arm RPC server:
+
+```bash
+python arm_server.py
+```
+
+In another terminal, record phone teleoperation demos:
+
+```bash
+conda activate tidybot2
+python main.py --teleop --save
+```
+
+Open the phone web app URL printed by the script. Use the phone app to start/end episodes and reset between demos.
+
+To record with gamepad control instead:
+
+```bash
+conda activate tidybot2
+python main.py --gamepad --save
+```
+
+Use `Start` to begin an episode, hold `LB` or `RB` as the dead-man switch while moving the arm, press `Back` to end the episode, then press `A` to save or `B` to discard.
+
 This code release accompanies the following project:
 
 ### TidyBot++: An Open-Source Holonomic Mobile Manipulator for Robot Learning

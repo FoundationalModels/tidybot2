@@ -1,6 +1,7 @@
 # tidybot2
 
 ## Recording demos on a table-mounted Kinova arm
+### Phone Teleop
 
 For a single Kinova arm mounted to a table, start from this repo and activate the environment first:
 
@@ -21,8 +22,9 @@ conda activate tidybot2
 python main.py --teleop --save
 ```
 
-Open the phone web app URL printed by the script. Use the phone app to start/end episodes and reset between demos.
+You need to have installed either the XRViewer or the XR Browser app on your iphone. Inside the app, open the phone web app URL printed by the script. Use the phone app to start/end episodes and reset between demos.
 
+### Gamepad Teleop
 To record with gamepad control instead:
 
 ```bash
@@ -31,6 +33,8 @@ python main.py --gamepad --save
 ```
 
 Use `Start` to begin an episode, hold `LB` or `RB` as the dead-man switch while moving the arm, press `Back` to end the episode, then press `A` to save or `B` to discard.
+
+____
 
 This code release accompanies the following project:
 
